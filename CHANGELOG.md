@@ -1,15 +1,24 @@
 # Changelog
 
-## 0.2.0 - Mobile/web ready
+## v0.4.0
 
-- Aggiunta configurazione Streamlit per deploy cloud.
-- Aggiunto file `DEPLOY_MOBILE.md` con istruzioni per uso quotidiano da telefono.
-- Layout reso più adatto a schermi piccoli.
-- Aggiunti `runtime.txt`, `.gitignore` e `.streamlit/config.toml`.
+### Nuovo
+- Aggiunto bilanciamento settimanale automatico negli ultimi 7 giorni.
+- L'app ora usa il diario salvato per modificare i punteggi dei piatti: penalizza formaggi, uova e carne rossa se già frequenti; spinge pesce e legumi se sono bassi.
+- La cena suggerita ora considera sia il pranzo reale sia la rotazione settimanale.
+- Nel weekend le proposte pranzo/cena vengono ordinate anche in base a cosa hai già mangiato in settimana.
+- Nuova sezione laterale "Bilanciamento 7 giorni" con semafori e messaggi pratici.
+- Nuova sezione "Backup diario": esporta/importa il diario in formato JSON, utile perché su Streamlit il salvataggio locale può non essere permanente.
 
-## 0.1.0
+### Migliorato
+- Conteggio settimanale più realistico: pranzo e cena vengono contati separatamente.
+- Migliori avvisi su ripetizione di formaggi, uova, carne rossa e piatti ricchi.
+- Più coerenza con l'uso pratico da iPad/iPhone.
 
-- Prima versione Streamlit locale.
-- Lettura menù CompassCloud Ferrero.
-- Regole personalizzate per piano alimentare da 1800 kcal.
-- Suggerimento pranzo/cena e diario semplice.
+## v0.3.0
+- Scelta della data.
+- Domanda sulla colazione.
+- Inserimento pranzo reale.
+- Cena ricalcolata in base al pranzo.
+- Alternative cena.
+- Sabato e domenica senza mensa: proposta pranzo/cena.

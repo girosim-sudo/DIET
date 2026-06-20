@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, asdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -23,6 +23,7 @@ from bs4 import BeautifulSoup
 MENU_INDEX_URL = "https://ferrero.compasscloud.it/presentazione_menu"
 APP_DIR = Path(__file__).resolve().parent
 LOG_PATH = APP_DIR / "diario_alimentare.json"
+APP_VERSION = "0.4.0"
 
 # Preferenze e vincoli personali. Modificabili qui o nel pannello laterale.
 DEFAULT_PROFILE = {
@@ -39,6 +40,20 @@ DEFAULT_PROFILE = {
         "olio: misurato; se il piatto è già condito, non aggiungere altro olio a crudo",
         "peperoncino ok, ma limitarlo se compare reflusso",
     ],
+}
+
+
+# Regole pratiche di rotazione settimanale.
+# Sono volutamente conservative: servono a evitare ripetizioni e a spingere pesce/legumi
+# quando nella settimana sono rimasti bassi. Sono modificabili in base alle indicazioni della nutrizionista.
+WEEKLY_RULES = {
+    "fish": {"label": "Pesce", "min": 2, "max": 4, "prefer_if_low": True},
+    "legumes": {"label": "Legumi", "min": 2, "max": 4, "prefer_if_low": True},
+    "poultry": {"label": "Carne bianca", "min": 0, "max": 5, "prefer_if_low": False},
+    "red_meat": {"label": "Carne rossa/maiale", "min": 0, "max": 2, "prefer_if_low": False},
+    "cheese": {"label": "Formaggi", "min": 0, "max": 2, "prefer_if_low": False},
+    "eggs": {"label": "Uova", "min": 0, "max": 2, "prefer_if_low": False},
+    "rich": {"label": "Piatti ricchi", "min": 0, "max": 1, "prefer_if_low": False},
 }
 
 FIXED_OPTIONS = [
@@ -354,13 +369,15 @@ def parse_menu_page(url: str) -> Tuple[str, str, List[Dish]]:
     return menu_date, line_name, unique
 
 
-def load_all_menus(selected_lines: Optional[List[str]] = None) -> Tuple[str, List[Dish], List[str]]:
+def load_all_menus(selected_lines: Optional[List[str]] = None, target_date: Optional[date] = None) -> Tuple[str, List[Dish], List[str]]:
     errors: List[str] = []
     all_dishes: List[Dish] = []
     menu_date = ""
     links = get_menu_links()
     if selected_lines:
         links = {k: v for k, v in links.items() if k in selected_lines}
+    if target_date is not None:
+        links = {k: adjust_menu_url_date(v, target_date) for k, v in links.items()}
     for line_name, url in links.items():
         try:
             d, line, dishes = parse_menu_page(url)
@@ -427,8 +444,8 @@ def best_by_category(dishes: List[Dish], category: str, n: int = 5) -> List[Dish
     return sorted([d for d in dishes if d.category == category], key=lambda d: d.score, reverse=True)[:n]
 
 
-def find_best_lunch(dishes: List[Dish]) -> Dict[str, object]:
-    dishes = unique_dishes(dishes)
+def find_best_lunch(dishes: List[Dish], weekly_counts_data: Optional[Dict[str, int]] = None) -> Dict[str, object]:
+    dishes = unique_dishes(apply_weekly_balance(dishes, weekly_counts_data))
     piatti_unici = sorted([d for d in dishes if d.category in {"Piatto unico", "Combinazione"}], key=lambda d: d.score, reverse=True)
     primi = best_by_category(dishes, "Primi Piatti", 10)
     secondi = best_by_category(dishes, "Secondi Piatti", 10)
@@ -501,7 +518,7 @@ def meal_contains(items: Iterable[Dish], words: Iterable[str]) -> bool:
     return any(w in text for w in words)
 
 
-def suggest_dinner(lunch_items: Iterable[Dish], lunch_score: int) -> Dict[str, str]:
+def suggest_dinner(lunch_items: Iterable[Dish], lunch_score: int, weekly_counts_data: Optional[Dict[str, int]] = None) -> Dict[str, str]:
     items = list(lunch_items)
     rich = meal_contains(items, RICH_KEYWORDS) or lunch_score < 65
     fish = meal_contains(items, PROTEIN_KEYWORDS["fish"])
@@ -537,6 +554,26 @@ def suggest_dinner(lunch_items: Iterable[Dish], lunch_score: int) -> Dict[str, s
         dinner = "Cena: proteina magra a scelta + verdure abbondanti + 80-100 g pane o 80 g riso."
         why = "Pranzo abbastanza neutro: resta sullo schema base del piano."
 
+    if weekly_counts_data and not rich:
+        low_fish = weekly_counts_data.get("fish", 0) < WEEKLY_RULES["fish"]["min"]
+        low_legumes = weekly_counts_data.get("legumes", 0) < WEEKLY_RULES["legumes"]["min"]
+        high_red = weekly_counts_data.get("red_meat", 0) >= WEEKLY_RULES["red_meat"]["max"]
+        high_cheese = weekly_counts_data.get("cheese", 0) >= WEEKLY_RULES["cheese"]["max"]
+        high_eggs = weekly_counts_data.get("eggs", 0) >= WEEKLY_RULES["eggs"]["max"]
+
+        if low_fish and not fish:
+            dinner = "Cena preferita oggi: pesce semplice al forno/vapore/padella antiaderente + verdure abbondanti + 80-100 g pane."
+            why += " Bilanciamento settimanale: il pesce è ancora basso, quindi oggi conviene inserirlo."
+        elif low_legumes and not legumes and not eggs:
+            dinner = "Cena preferita oggi: legumi (ceci/lenticchie/fagioli) + verdure + una quota controllata di pane, riso o farro."
+            why += " Bilanciamento settimanale: i legumi sono ancora bassi, quindi oggi conviene recuperarli."
+        if high_red:
+            why += " Carne rossa già al limite: evita carne cruda, sottofiletto, vitello, lonza e ragù a cena."
+        if high_cheese:
+            why += " Formaggi già al limite: evita feta, mozzarella, ricotta, primo sale e scamorza a cena."
+        if high_eggs:
+            why += " Uova già al limite: evita frittata o uova a cena."
+
     if carb_heavy and not rich:
         why += " Poiché a pranzo c'è già una quota di carboidrati, a cena non sommare pane e patate/riso."
     return {"dinner": dinner, "why": why}
@@ -561,22 +598,219 @@ def add_log_entry(entry: Dict[str, object]) -> None:
     save_log(entries)
 
 
-def weekly_counts(entries: List[Dict[str, object]]) -> Dict[str, int]:
+def dedupe_entries(entries: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    seen = set()
+    output: List[Dict[str, object]] = []
+    for e in entries:
+        key = (str(e.get("date", "")), str(e.get("breakfast", "")), str(e.get("lunch", "")), str(e.get("dinner", "")))
+        if key not in seen:
+            output.append(e)
+            seen.add(key)
+    output.sort(key=lambda x: str(x.get("date", "")))
+    return output
+
+
+def render_diary_tools(entries: List[Dict[str, object]]) -> None:
+    with st.sidebar.expander("Backup diario"):
+        st.caption("Su Streamlit il file locale può non essere eterno. Esporta il diario ogni tanto e reimportalo se serve.")
+        st.download_button(
+            "Scarica diario JSON",
+            data=json.dumps(entries, ensure_ascii=False, indent=2),
+            file_name="diario_alimentare_ferrero.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+        uploaded = st.file_uploader("Importa diario JSON", type=["json"], label_visibility="collapsed")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if uploaded is not None and st.button("Unisci", use_container_width=True):
+                try:
+                    imported = json.loads(uploaded.getvalue().decode("utf-8"))
+                    if not isinstance(imported, list):
+                        raise ValueError("Il file non contiene una lista di giornate.")
+                    save_log(dedupe_entries(entries + imported))
+                    st.success("Diario importato e unito. Ricarica la pagina se non vedi subito i dati.")
+                except Exception as exc:
+                    st.error(f"Import non riuscito: {exc}")
+        with col_b:
+            if uploaded is not None and st.button("Sostituisci", use_container_width=True):
+                try:
+                    imported = json.loads(uploaded.getvalue().decode("utf-8"))
+                    if not isinstance(imported, list):
+                        raise ValueError("Il file non contiene una lista di giornate.")
+                    save_log(dedupe_entries(imported))
+                    st.success("Diario sostituito. Ricarica la pagina se non vedi subito i dati.")
+                except Exception as exc:
+                    st.error(f"Import non riuscito: {exc}")
+
+
+def categories_in_text(text: str) -> set[str]:
+    """Riconosce le categorie proteiche e i piatti ricchi in un testo libero."""
+    t = lower(text)
+    found: set[str] = set()
+    for key, kws in PROTEIN_KEYWORDS.items():
+        if key == "soy":
+            continue
+        if any(k in t for k in kws):
+            found.add(key)
+    if any(k in t for k in RICH_KEYWORDS):
+        found.add("rich")
+    return found
+
+
+def weekly_counts(entries: List[Dict[str, object]], reference_date: Optional[date] = None) -> Dict[str, int]:
+    """Conta le fonti proteiche negli ultimi 7 giorni, distinguendo pranzo e cena.
+
+    La versione precedente contava la categoria al massimo una volta al giorno; questa versione
+    conta pranzo e cena separatamente, così il bilanciamento è più realistico.
+    """
     counts = {"fish": 0, "poultry": 0, "red_meat": 0, "cheese": 0, "eggs": 0, "legumes": 0, "rich": 0}
-    today = date.today()
+    today = reference_date or date.today()
     for e in entries:
         try:
             d = datetime.fromisoformat(str(e.get("date"))).date()
         except Exception:
             continue
-        if (today - d).days > 7:
+        delta = (today - d).days
+        if delta < 0 or delta > 6:
             continue
-        text = lower(str(e.get("lunch", "")) + " " + str(e.get("dinner", "")))
-        for key, kws in PROTEIN_KEYWORDS.items():
-            if any(k in text for k in kws):
-                counts[key] = counts.get(key, 0) + 1
-        if any(k in text for k in RICH_KEYWORDS):
-            counts["rich"] += 1
+        for field in ("lunch", "dinner"):
+            cats = categories_in_text(str(e.get(field, "")))
+            for cat in cats:
+                if cat in counts:
+                    counts[cat] += 1
+    return counts
+
+
+def weekly_balance_messages(counts: Dict[str, int]) -> List[Dict[str, str]]:
+    messages: List[Dict[str, str]] = []
+    fish = counts.get("fish", 0)
+    legumes = counts.get("legumes", 0)
+    red_meat = counts.get("red_meat", 0)
+    cheese = counts.get("cheese", 0)
+    eggs = counts.get("eggs", 0)
+    rich = counts.get("rich", 0)
+
+    if fish < WEEKLY_RULES["fish"]["min"]:
+        messages.append({"level": "info", "text": "Pesce basso nella settimana: se possibile oggi privilegia pesce semplice o tonno non troppo spesso."})
+    if legumes < WEEKLY_RULES["legumes"]["min"]:
+        messages.append({"level": "info", "text": "Legumi bassi nella settimana: buona idea inserirli a pranzo o cena."})
+    if red_meat >= WEEKLY_RULES["red_meat"]["max"]:
+        messages.append({"level": "warning", "text": "Carne rossa già alta: oggi evita sottofiletto, lonza, vitello, ragù e carne cruda."})
+    elif red_meat == 1:
+        messages.append({"level": "info", "text": "Hai già una quota di carne rossa: usala solo se il resto del menù è scarso."})
+    if cheese >= WEEKLY_RULES["cheese"]["max"]:
+        messages.append({"level": "warning", "text": "Formaggi già al limite: oggi evita feta, primo sale, mozzarella, ricotta, scamorza e gorgonzola."})
+    elif cheese == 1:
+        messages.append({"level": "info", "text": "Hai già fatto formaggio: meglio non ripeterlo oggi se ci sono alternative."})
+    if eggs >= WEEKLY_RULES["eggs"]["max"]:
+        messages.append({"level": "warning", "text": "Uova già al limite: oggi evita frittata/uova e ruota su pesce, legumi o carne bianca."})
+    if rich > WEEKLY_RULES["rich"]["max"]:
+        messages.append({"level": "warning", "text": "Settimana un po' ricca: evita fritti, gratin, salse, lasagne e formaggi pesanti."})
+    if not messages:
+        messages.append({"level": "success", "text": "Rotazione settimanale equilibrata: scegli il piatto migliore del giorno senza forzature."})
+    return messages
+
+
+def weekly_adjustment_for_dish(dish: Dish, counts: Dict[str, int]) -> Tuple[int, List[str]]:
+    text = lower(dish.name + " " + " ".join(dish.tags))
+    cats = categories_in_text(text)
+    adjustment = 0
+    notes: List[str] = []
+
+    if "fish" in cats:
+        if counts.get("fish", 0) < WEEKLY_RULES["fish"]["min"]:
+            adjustment += 10
+            notes.append("bonus settimanale: pesce da inserire")
+        elif counts.get("fish", 0) >= WEEKLY_RULES["fish"]["max"]:
+            adjustment -= 8
+            notes.append("pesce già frequente")
+    if "legumes" in cats:
+        if counts.get("legumes", 0) < WEEKLY_RULES["legumes"]["min"]:
+            adjustment += 14
+            notes.append("bonus settimanale: legumi da inserire")
+        elif counts.get("legumes", 0) >= WEEKLY_RULES["legumes"]["max"]:
+            adjustment -= 5
+            notes.append("legumi già frequenti")
+    if "red_meat" in cats:
+        if counts.get("red_meat", 0) >= WEEKLY_RULES["red_meat"]["max"]:
+            adjustment -= 30
+            notes.append("penalità: carne rossa già al limite")
+        elif counts.get("red_meat", 0) == 1:
+            adjustment -= 12
+            notes.append("carne rossa già presente in settimana")
+    if "cheese" in cats:
+        if counts.get("cheese", 0) >= WEEKLY_RULES["cheese"]["max"]:
+            adjustment -= 30
+            notes.append("penalità: formaggi già al limite")
+        elif counts.get("cheese", 0) == 1:
+            adjustment -= 12
+            notes.append("formaggio già presente in settimana")
+    if "eggs" in cats:
+        if counts.get("eggs", 0) >= WEEKLY_RULES["eggs"]["max"]:
+            adjustment -= 24
+            notes.append("penalità: uova già al limite")
+        elif counts.get("eggs", 0) == 1:
+            adjustment -= 8
+            notes.append("uova già presenti in settimana")
+    if "poultry" in cats and counts.get("poultry", 0) >= WEEKLY_RULES["poultry"]["max"]:
+        adjustment -= 8
+        notes.append("carne bianca già molto frequente")
+    if "rich" in cats and counts.get("rich", 0) >= WEEKLY_RULES["rich"]["max"]:
+        adjustment -= 20
+        notes.append("settimana già ricca")
+
+    return adjustment, notes
+
+
+def apply_weekly_balance(dishes: List[Dish], counts: Optional[Dict[str, int]]) -> List[Dish]:
+    if not counts:
+        return dishes
+    balanced: List[Dish] = []
+    for d in dishes:
+        adjustment, notes = weekly_adjustment_for_dish(d, counts)
+        new_score = max(0, min(100, d.score + adjustment))
+        reason = d.reason
+        tags = list(d.tags)
+        if notes:
+            reason += " Bilanciamento settimanale: " + "; ".join(notes) + "."
+            tags.extend(notes)
+        balanced.append(Dish(
+            name=d.name,
+            category=d.category,
+            line=d.line,
+            score=new_score,
+            tags=sorted(set(tags)),
+            reason=reason,
+            url=d.url,
+        ))
+    return balanced
+
+
+def render_weekly_sidebar(entries: List[Dict[str, object]], selected_date: date) -> Dict[str, int]:
+    counts = weekly_counts(entries, selected_date)
+    st.sidebar.divider()
+    st.sidebar.header("Bilanciamento 7 giorni")
+    for key in ["fish", "legumes", "poultry", "red_meat", "cheese", "eggs", "rich"]:
+        rule = WEEKLY_RULES.get(key, {})
+        label = rule.get("label", key)
+        value = counts.get(key, 0)
+        max_value = int(rule.get("max", 4))
+        min_value = int(rule.get("min", 0))
+        if key in {"fish", "legumes"} and value < min_value:
+            icon = "🟡"
+        elif value > max_value or (key in {"red_meat", "cheese", "eggs", "rich"} and value >= max_value):
+            icon = "🔴"
+        else:
+            icon = "🟢"
+        st.sidebar.write(f"{icon} {label}: **{value}**")
+    for msg in weekly_balance_messages(counts):
+        if msg["level"] == "warning":
+            st.sidebar.warning(msg["text"])
+        elif msg["level"] == "success":
+            st.sidebar.success(msg["text"])
+        else:
+            st.sidebar.info(msg["text"])
     return counts
 
 
@@ -588,6 +822,240 @@ def render_score(score: int) -> str:
     if score >= 55:
         return f"🟠 {score}/100"
     return f"🔴 {score}/100"
+
+
+
+BREAKFAST_OPTIONS = [
+    "Pane + velo marmellata + latte parzialmente scremato",
+    "Yogurt bianco magro + cereali senza zuccheri",
+    "Caffè/cappuccino + brioche",
+    "Solo caffè / colazione saltata",
+    "Altro",
+]
+
+
+def format_it_date(d: date) -> str:
+    weekdays = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"]
+    months = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"]
+    return f"{weekdays[d.weekday()]} {d.day} {months[d.month - 1]} {d.year}"
+
+
+def is_weekend(d: date) -> bool:
+    return d.weekday() >= 5
+
+
+def adjust_menu_url_date(url: str, target_date: date) -> str:
+    """CompassCloud usa nel path /menu/<timestamp>/...; il timestamp cresce di 86400 al giorno.
+    Parto dal link corrente letto dalla pagina indice e lo traslo alla data selezionata.
+    Se il sito cambia struttura, ritorno il link originale.
+    """
+    match = re.search(r"/menu/(\d{10})/", url)
+    if not match:
+        return url
+    ts = int(match.group(1))
+    base_dt = datetime.fromtimestamp(ts)
+    delta_days = (target_date - base_dt.date()).days
+    new_ts = ts + (delta_days * 86400)
+    return url.replace(f"/menu/{ts}/", f"/menu/{new_ts}/")
+
+
+def evaluate_breakfast(choice: str, custom: str = "") -> Dict[str, str]:
+    text = lower(choice + " " + custom)
+    if "saltata" in text or "solo caff" in text:
+        return {
+            "level": "warning",
+            "title": "Colazione troppo leggera",
+            "message": "Meglio evitare di arrivare a pranzo troppo affamato: oggi scegli un pranzo ordinato e non compensare con pane/dolci extra.",
+        }
+    if "brioche" in text:
+        return {
+            "level": "warning",
+            "title": "Colazione più ricca",
+            "message": "Va considerata come extra rispetto allo schema: a pranzo resta su sugo semplice, proteina magra e verdura, senza pane aggiunto.",
+        }
+    if "yogurt" in text or "cereali" in text:
+        return {
+            "level": "success",
+            "title": "Colazione molto coerente",
+            "message": "Buona base: proteine leggere, carboidrati controllati e buona sazietà. Mantieni normale il pranzo.",
+        }
+    if "pane" in text or "latte" in text:
+        return {
+            "level": "success",
+            "title": "Colazione coerente",
+            "message": "Scelta in linea con il piano. A pranzo puoi seguire normalmente carboidrato + proteina + verdura.",
+        }
+    return {
+        "level": "info",
+        "title": "Colazione registrata",
+        "message": "Valutala in modo pratico: se è stata ricca, alleggerisci i condimenti; se è stata scarsa, non compensare con scelte impulsive.",
+    }
+
+
+def dishes_from_free_text(text: str) -> List[Dish]:
+    text = normalize(text)
+    if not text:
+        return []
+    parts = [normalize(x) for x in re.split(r"\s\+\s|;|\n", text) if normalize(x)]
+    dishes: List[Dish] = []
+    for part in parts or [text]:
+        cat = classify_category(part)
+        sc, tags, reason = score_dish(part, cat, "Inserito")
+        dishes.append(Dish(part, cat, "Inserito", sc, tags, reason))
+    return dishes
+
+
+def suggest_dinner_alternatives(lunch_items: Iterable[Dish], lunch_score: int, weekly_counts_data: Optional[Dict[str, int]] = None) -> List[Dict[str, str]]:
+    items = list(lunch_items)
+    fish = meal_contains(items, PROTEIN_KEYWORDS["fish"])
+    poultry = meal_contains(items, PROTEIN_KEYWORDS["poultry"])
+    red_meat = meal_contains(items, PROTEIN_KEYWORDS["red_meat"])
+    cheese = meal_contains(items, PROTEIN_KEYWORDS["cheese"])
+    legumes = meal_contains(items, PROTEIN_KEYWORDS["legumes"])
+    eggs = meal_contains(items, PROTEIN_KEYWORDS["eggs"])
+    rich = meal_contains(items, RICH_KEYWORDS) or lunch_score < 65
+
+    pool = []
+    if not fish:
+        pool.append({
+            "title": "Pesce semplice",
+            "plate": "Merluzzo/nasello/orata al forno o in padella antiaderente + verdure abbondanti + 80-100 g pane.",
+            "why": "Ottimo per variare le proteine e restare leggero.",
+        })
+    if not poultry:
+        pool.append({
+            "title": "Carne bianca",
+            "plate": "Pollo o tacchino ai ferri + insalata grande o verdure cotte + 80-100 g pane fresco/integrale.",
+            "why": "Scelta pulita quando il pranzo è stato ricco o incerto.",
+        })
+    if not legumes and not rich:
+        pool.append({
+            "title": "Legumi",
+            "plate": "Lenticchie/ceci/fagioli + verdure + una piccola quota di farro/riso o pane controllato.",
+            "why": "Aiuta a ridurre la frequenza di carne e formaggi nella settimana.",
+        })
+    if not eggs and not rich:
+        pool.append({
+            "title": "Uova",
+            "plate": "Frittata al forno con 2 uova e spinaci/zucchine + insalata + pane controllato.",
+            "why": "Alternativa semplice, purché non ci siano già state uova a pranzo.",
+        })
+    if not red_meat and not rich:
+        pool.append({
+            "title": "Carne cruda piemontese",
+            "plate": "Carne cruda di bovino/Fassona 150-170 g + insalata grande + 80-100 g pane. Poco olio, limone/pepe a piacere.",
+            "why": "Può rientrare come tradizione e piatto proteico pulito, senza aggiungere formaggi o altri secondi.",
+        })
+    if cheese:
+        pool.append({
+            "title": "Cena senza formaggi",
+            "plate": "Pesce bianco o tacchino + verdure + pane controllato. Evita mozzarella, feta, primo sale e salumi.",
+            "why": "A pranzo c'è già stata quota formaggio: meglio non ripeterla.",
+        })
+
+    if weekly_counts_data:
+        def option_priority(opt: Dict[str, str]) -> int:
+            title = lower(opt.get("title", ""))
+            plate = lower(opt.get("plate", ""))
+            text = title + " " + plate
+            score = 50
+            if "pesce" in text:
+                score += 18 if weekly_counts_data.get("fish", 0) < WEEKLY_RULES["fish"]["min"] else 0
+                score -= 12 if weekly_counts_data.get("fish", 0) >= WEEKLY_RULES["fish"]["max"] else 0
+            if "legumi" in text or "ceci" in text or "lenticchie" in text or "fagioli" in text:
+                score += 22 if weekly_counts_data.get("legumes", 0) < WEEKLY_RULES["legumes"]["min"] else 0
+            if "carne cruda" in text or "sottofiletto" in text or "vitello" in text:
+                score -= 30 if weekly_counts_data.get("red_meat", 0) >= WEEKLY_RULES["red_meat"]["max"] else 0
+            if "uova" in text or "frittata" in text:
+                score -= 25 if weekly_counts_data.get("eggs", 0) >= WEEKLY_RULES["eggs"]["max"] else 0
+            if "formagg" in text or "feta" in text or "mozzarella" in text or "primo sale" in text:
+                score -= 25 if weekly_counts_data.get("cheese", 0) >= WEEKLY_RULES["cheese"]["max"] else 0
+            return score
+        pool = sorted(pool, key=option_priority, reverse=True)
+
+    return pool[:4]
+
+
+def evaluate_dinner_text(dinner_text: str, lunch_text: str = "") -> Dict[str, str]:
+    text = lower(dinner_text)
+    lunch = lower(lunch_text)
+    if not text:
+        return {"level": "info", "message": "Inserisci la cena quando l'hai decisa o consumata: l'app la salverà nel diario."}
+    warnings = []
+    if not any(k in text for k in VEG_KEYWORDS):
+        warnings.append("manca una verdura evidente")
+    if any(k in text for k in RICH_KEYWORDS):
+        warnings.append("ci sono elementi ricchi: fritti/gratin/salse/formaggi pesanti")
+    if any(k in text for k in PROTEIN_KEYWORDS["red_meat"]) and any(k in lunch for k in PROTEIN_KEYWORDS["red_meat"]):
+        warnings.append("carne rossa sia a pranzo sia a cena")
+    if any(k in text for k in PROTEIN_KEYWORDS["cheese"]) and any(k in lunch for k in PROTEIN_KEYWORDS["cheese"]):
+        warnings.append("formaggi ripetuti nello stesso giorno")
+    if warnings:
+        return {"level": "warning", "message": "Attenzione: " + "; ".join(warnings) + "."}
+    return {"level": "success", "message": "Cena registrata: sembra coerente se le porzioni sono controllate e la verdura è abbondante."}
+
+
+def weekend_suggestions(selected_date: date, breakfast_choice: str, breakfast_custom: str = "", weekly_counts_data: Optional[Dict[str, int]] = None) -> Dict[str, List[Dict[str, str]]]:
+    b = lower(breakfast_choice + " " + breakfast_custom)
+    light_after_breakfast = "brioche" in b
+    lunch = [
+        {
+            "title": "Pranzo base mediterraneo",
+            "plate": "Pasta integrale/riso/farro 80-90 g con sugo rosso + pollo/tacchino o pesce + insalata grande.",
+            "why": "È la versione casalinga più vicina alla mensa ideale: carboidrato, proteina e verdura.",
+        },
+        {
+            "title": "Pranzo con legumi",
+            "plate": "Farro/riso + ceci/lenticchie/fagioli + verdure crude e cotte. Poco olio, limone/aceto/spezie.",
+            "why": "Utile nel weekend per non eccedere con carne, formaggi e affettati.",
+        },
+        {
+            "title": "Carne cruda piemontese",
+            "plate": "Carne cruda 150 g + insalata grande + 80-100 g pane. Niente formaggi o salumi nello stesso pasto.",
+            "why": "Tradizione compatibile se trattata come fonte proteica principale e non come antipasto extra.",
+        },
+    ]
+    if light_after_breakfast:
+        lunch.insert(0, {
+            "title": "Dopo brioche: pranzo pulito",
+            "plate": "Pesce bianco o tacchino + verdure abbondanti + 70-80 g pane o riso. Evita dolci e formaggi.",
+            "why": "La colazione è stata più ricca: a pranzo teniamo il condimento molto semplice.",
+        })
+    dinner = [
+        {
+            "title": "Cena pesce",
+            "plate": "Pesce al forno/vapore + verdure + 80-100 g pane. Patate solo se non hai già fatto pasta/riso a pranzo.",
+            "why": "Scelta equilibrata e molto adatta al weekend.",
+        },
+        {
+            "title": "Cena carne bianca",
+            "plate": "Pollo/tacchino ai ferri + verdure cotte/crude + pane controllato.",
+            "why": "Semplice, saziante e facile da tenere dentro lo schema.",
+        },
+        {
+            "title": "Cena uova",
+            "plate": "Frittata al forno con 2 uova e verdure + insalata. Pane controllato se serve.",
+            "why": "Buona alternativa quando a pranzo non hai già usato uova.",
+        },
+    ]
+    if weekly_counts_data:
+        def option_score(opt: Dict[str, str]) -> int:
+            text = lower(opt.get("title", "") + " " + opt.get("plate", ""))
+            score = 50
+            if any(k in text for k in ["pesce", "merluzzo", "orata", "nasello"]):
+                score += 18 if weekly_counts_data.get("fish", 0) < WEEKLY_RULES["fish"]["min"] else 0
+            if any(k in text for k in ["legumi", "ceci", "lenticchie", "fagioli"]):
+                score += 22 if weekly_counts_data.get("legumes", 0) < WEEKLY_RULES["legumes"]["min"] else 0
+            if any(k in text for k in ["carne cruda", "fassona", "sottofiletto", "vitello"]):
+                score -= 35 if weekly_counts_data.get("red_meat", 0) >= WEEKLY_RULES["red_meat"]["max"] else 0
+            if any(k in text for k in ["uova", "frittata"]):
+                score -= 28 if weekly_counts_data.get("eggs", 0) >= WEEKLY_RULES["eggs"]["max"] else 0
+            if any(k in text for k in ["formaggio", "feta", "mozzarella", "primo sale"]):
+                score -= 28 if weekly_counts_data.get("cheese", 0) >= WEEKLY_RULES["cheese"]["max"] else 0
+            return score
+        lunch = sorted(lunch, key=option_score, reverse=True)
+        dinner = sorted(dinner, key=option_score, reverse=True)
+    return {"lunch": lunch[:4], "dinner": dinner[:3]}
 
 
 def main() -> None:
@@ -608,6 +1076,12 @@ def main() -> None:
     st.caption("Supporto pratico per applicare il piano alimentare alla mensa. Non sostituisce nutrizionista o medico.")
 
     with st.sidebar:
+        st.header("Giornata")
+        selected_date = st.date_input("Data da pianificare", value=date.today(), format="DD/MM/YYYY")
+        if not isinstance(selected_date, date):
+            selected_date = date.today()
+        st.write(f"**{format_it_date(selected_date)}**")
+        st.divider()
         st.header("Profilo")
         st.write(f"Schema: **{DEFAULT_PROFILE['target_kcal']} kcal**")
         st.write(f"Acqua: **{DEFAULT_PROFILE['acqua_litri']} L/die**")
@@ -623,6 +1097,62 @@ def main() -> None:
         st.divider()
         st.write("Allergie/intolleranze da evitare: **fragole, arachidi**.")
         st.write("Non graditi: carciofi, cavolfiore, broccoli, melone.")
+
+    entries = load_log()
+    weekly_counts_data = render_weekly_sidebar(entries, selected_date)
+    render_diary_tools(entries)
+
+    st.subheader("☕ Colazione")
+    breakfast_choice = st.selectbox("Cosa hai fatto a colazione?", BREAKFAST_OPTIONS)
+    breakfast_custom = ""
+    if breakfast_choice == "Altro":
+        breakfast_custom = st.text_input("Descrivi la colazione", placeholder="Esempio: latte + Weetabix, yogurt + frutta...")
+    breakfast_eval = evaluate_breakfast(breakfast_choice, breakfast_custom)
+    getattr(st, breakfast_eval["level"])(f"**{breakfast_eval['title']}** — {breakfast_eval['message']}")
+
+    st.divider()
+
+    if is_weekend(selected_date):
+        st.subheader(f"Weekend — {format_it_date(selected_date)}")
+        st.info("Sabato e domenica non considero la mensa: ti propongo pranzo e cena da casa/ristorante mantenendo la stessa logica del piano.")
+        weekend = weekend_suggestions(selected_date, breakfast_choice, breakfast_custom, weekly_counts_data)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("### 🍽️ Pranzo consigliato")
+            for opt in weekend["lunch"]:
+                with st.container(border=True):
+                    st.markdown(f"**{opt['title']}**")
+                    st.write(opt["plate"])
+                    st.caption(opt["why"])
+        with col2:
+            st.markdown("### 🌙 Cena consigliata")
+            for opt in weekend["dinner"]:
+                with st.container(border=True):
+                    st.markdown(f"**{opt['title']}**")
+                    st.write(opt["plate"])
+                    st.caption(opt["why"])
+
+        st.divider()
+        st.markdown("### Diario weekend")
+        eaten_lunch = st.text_area("Cosa hai mangiato a pranzo?", placeholder="Esempio: carne cruda + insalata + pane...")
+        dinner_input = st.text_area("Cosa hai mangiato o mangerai a cena?", placeholder="Esempio: orata + zucchine + pane...")
+        dinner_eval = evaluate_dinner_text(dinner_input, eaten_lunch)
+        getattr(st, dinner_eval["level"])(dinner_eval["message"])
+        note = st.text_area("Note facoltative", placeholder="Fame, reflusso, acqua bevuta, allenamento...")
+        if st.button("Salva giornata weekend"):
+            add_log_entry({
+                "date": selected_date.isoformat(),
+                "breakfast": breakfast_choice if breakfast_choice != "Altro" else breakfast_custom,
+                "lunch": eaten_lunch,
+                "dinner": dinner_input,
+                "score": None,
+                "note": note,
+            })
+            st.success("Giornata salvata nel diario locale.")
+
+        st.caption("Versione 0.4.0 web/mobile. Nel weekend la mensa è esclusa e l'app propone pasti domestici.")
+        return
 
     selected_lines = None
     if mode == "Scarica dal sito":
@@ -647,7 +1177,7 @@ def main() -> None:
     if mode == "Scarica dal sito":
         with st.spinner("Leggo il menù Ferrero CompassCloud..."):
             try:
-                menu_date, dishes, errors = load_all_menus(selected_lines=selected_lines)
+                menu_date, dishes, errors = load_all_menus(selected_lines=selected_lines, target_date=selected_date)
             except Exception as exc:
                 menu_date, dishes, errors = "", [], [str(exc)]
         if errors:
@@ -661,18 +1191,17 @@ def main() -> None:
         st.info("Incolla il menù: puoi scrivere 'Primi:', 'Secondi:', 'Contorni:' e poi i piatti.")
         manual_text = st.text_area("Menù del giorno", height=220, placeholder="Primi: pasta integrale al pomodoro; risotto...\nSecondi: pollo ai ferri; nasello al vapore...\nContorni: melanzane al funghetto; insalata...")
         dishes = parse_manual_menu(manual_text) if manual_text else [Dish(**item) for item in FIXED_OPTIONS]
-        menu_date = date.today().strftime("%d/%m/%Y")
+        menu_date = selected_date.strftime("%d/%m/%Y")
 
-    result = find_best_lunch(dishes)
+    result = find_best_lunch(dishes, weekly_counts_data)
     best = result["best"]
     alternatives = result["alternatives"]
     avoid = result["avoid"]
 
-    st.subheader(f"Indicazione per oggi {('— ' + menu_date) if menu_date else ''}")
+    st.subheader(f"Indicazione per {format_it_date(selected_date)} {('— menù ' + menu_date) if menu_date else ''}")
 
     if best:
         lunch_items: List[Dish] = best["items"]  # type: ignore[assignment]
-        dinner = suggest_dinner(lunch_items, int(best["score"]))
         col1, col2 = st.columns([1.2, 1])
         with col1:
             st.markdown("### ✅ Pranzo consigliato")
@@ -681,13 +1210,14 @@ def main() -> None:
             st.write(str(best["rationale"]))
             st.info("Regola: niente pane se il pranzo contiene già pasta/riso/farro/cous cous/patate. Aggiungi insalata cruda se la verdura del piatto è poca.")
         with col2:
-            st.markdown("### 🌙 Cena consigliata")
+            st.markdown("### 🌙 Cena: prima indicazione")
+            dinner = suggest_dinner(lunch_items, int(best["score"]), weekly_counts_data)
             st.markdown(f"**{dinner['dinner']}**")
             st.write(dinner["why"])
             st.warning("Bevi fino ad arrivare ad almeno 2,5 L d'acqua nella giornata. Peperoncino ok se non dà reflusso.")
 
         st.divider()
-        st.markdown("### Alternative valide")
+        st.markdown("### Alternative valide per pranzo")
         if alternatives:
             for alt in alternatives:
                 with st.container(border=True):
@@ -706,6 +1236,26 @@ def main() -> None:
             st.write("Non emergono piatti chiaramente critici tra quelli letti.")
 
         st.divider()
+        st.markdown("### Cena personalizzata")
+        eaten_lunch = st.text_input("Cosa hai mangiato davvero a pranzo?", value=str(best["text"]))
+        actual_lunch_items = dishes_from_free_text(eaten_lunch) or lunch_items
+        actual_score = int(sum(d.score for d in actual_lunch_items) / max(1, len(actual_lunch_items))) if actual_lunch_items else int(best["score"])
+        dinner_recalc = suggest_dinner(actual_lunch_items, actual_score, weekly_counts_data)
+        st.markdown(f"**Cena suggerita in base al pranzo inserito:** {dinner_recalc['dinner']}")
+        st.caption(dinner_recalc["why"])
+
+        st.markdown("#### Alternative cena")
+        for opt in suggest_dinner_alternatives(actual_lunch_items, actual_score, weekly_counts_data):
+            with st.container(border=True):
+                st.markdown(f"**{opt['title']}**")
+                st.write(opt["plate"])
+                st.caption(opt["why"])
+
+        dinner_input = st.text_area("Cosa hai mangiato o mangerai a cena?", value=dinner_recalc["dinner"])
+        dinner_eval = evaluate_dinner_text(dinner_input, eaten_lunch)
+        getattr(st, dinner_eval["level"])(dinner_eval["message"])
+
+        st.divider()
         st.markdown("### Tutti i piatti letti e punteggio")
         for d in sorted(unique_dishes(dishes), key=lambda x: x.score, reverse=True):
             with st.expander(f"{render_score(d.score)} {d.name} — {d.category} — {d.line}"):
@@ -717,35 +1267,20 @@ def main() -> None:
 
         st.divider()
         st.markdown("### Diario")
-        eaten_lunch = st.text_input("Cosa hai mangiato davvero a pranzo?", value=str(best["text"]))
-        eaten_dinner = st.text_input("Cena fatta o prevista", value=dinner["dinner"])
         note = st.text_area("Note facoltative", placeholder="Fame, reflusso, energia, acqua bevuta...")
         if st.button("Salva giornata"):
             add_log_entry({
-                "date": date.today().isoformat(),
+                "date": selected_date.isoformat(),
+                "breakfast": breakfast_choice if breakfast_choice != "Altro" else breakfast_custom,
                 "lunch": eaten_lunch,
-                "dinner": eaten_dinner,
+                "dinner": dinner_input,
                 "score": int(best["score"]),
                 "note": note,
             })
             st.success("Giornata salvata nel diario locale.")
 
-    entries = load_log()
-    if entries:
-        with st.sidebar:
-            st.divider()
-            st.header("Ultimi 7 giorni")
-            counts = weekly_counts(entries)
-            st.write(f"Pesce: {counts.get('fish', 0)}")
-            st.write(f"Carne bianca: {counts.get('poultry', 0)}")
-            st.write(f"Carne rossa/maiale: {counts.get('red_meat', 0)}")
-            st.write(f"Formaggi: {counts.get('cheese', 0)}")
-            st.write(f"Uova: {counts.get('eggs', 0)}")
-            st.write(f"Legumi: {counts.get('legumes', 0)}")
-            if counts.get("rich", 0) > 1:
-                st.warning("Settimana un po' ricca: attenzione a fritti/gratin/formaggi/salse.")
 
-    st.caption("Versione web/mobile. Se CompassCloud cambia struttura, usa la modalità manuale dal menu laterale.")
+    st.caption("Versione 0.4.0 web/mobile. Se CompassCloud cambia struttura, usa la modalità manuale dal menu laterale.")
 
 
 if __name__ == "__main__":

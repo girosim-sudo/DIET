@@ -1,66 +1,53 @@
-# Uso quotidiano da telefono: pubblicazione web app
+# Deploy mobile/web su Streamlit Cloud
 
-Questa cartella contiene una **web app Streamlit**. Non è una app iOS/Android da installare dall'App Store: si pubblica online e si apre dal telefono con un link.
+Questa app è pensata per essere usata da iPhone/iPad come web app.
 
-## Flusso previsto
+## 1. Carica i file su GitHub
 
-1. Ogni mattina apri il link dal telefono.
-2. L'app legge il menù Ferrero CompassCloud Alba.
-3. Ti propone:
-   - pranzo consigliato;
-   - alternative valide;
-   - piatti da evitare/limitare;
-   - cena consigliata in base al pranzo.
-4. Se il sito non è leggibile, usi la modalità manuale e incolli il menù.
+Nel repository devono esserci almeno:
 
-## Pubblicazione consigliata: Streamlit Community Cloud
+```text
+app.py
+requirements.txt
+README.md
+CHANGELOG.md
+```
 
-### 1. Crea un repository GitHub
+Consigliato: lascia `app.py` nella cartella principale del repository.
 
-Nome suggerito: `ferrero-mensa-coach`
+## 2. Streamlit Cloud
 
-Carica nel repository questi file:
+Apri Streamlit Community Cloud, collega GitHub e crea una nuova app.
 
-- `app.py`
-- `requirements.txt`
-- `runtime.txt`
-- `.streamlit/config.toml`
-- `README.md`
+Impostazioni consigliate:
 
-Consiglio privacy: usa un repository **privato**, perché il codice contiene preferenze alimentari, allergie e note legate al tuo piano.
+```text
+Repository: girosim-sudo/DIET
+Branch: main
+Main file path: app.py
+```
 
-### 2. Pubblica su Streamlit Cloud
+Premi Deploy.
 
-1. Vai su Streamlit Community Cloud.
-2. Accedi con GitHub.
-3. Clicca **Create app**.
-4. Scegli il repository `ferrero-mensa-coach`.
-5. Branch: `main`.
-6. Main file path: `app.py`.
-7. Deploy.
+## 3. Aggiornare l'app
 
-Alla fine otterrai un link del tipo:
+Quando carichi una nuova versione su GitHub, Streamlit di solito aggiorna automaticamente.
+Se non succede:
 
-`https://nome-scelto.streamlit.app`
+- apri la dashboard Streamlit;
+- entra nell'app;
+- premi Reboot o Redeploy.
 
-### 3. Mettila sulla schermata Home dell'iPhone
+## 4. Usarla da iPhone/iPad
 
-1. Apri il link in Safari.
-2. Tocca il pulsante di condivisione.
-3. Scegli **Aggiungi a schermata Home**.
-4. Nome suggerito: `Mensa Coach`.
-5. Tocca **Aggiungi**.
+Apri il link Streamlit da Safari, poi:
 
-Da quel momento la apri come una normale app.
+```text
+Condividi → Aggiungi a schermata Home
+```
 
-## Nota su diario e privacy
+## 5. Backup diario
 
-Il diario salvato dall'app viene scritto in un piccolo file locale dell'ambiente in cui l'app gira. In cloud può non essere stabile nel tempo e non va usato per dati sensibili. Usalo solo per note semplici tipo "ho mangiato pasta + pollo". Se vuoi un diario serio e privato, la versione successiva dovrebbe usare Google Sheets privato o un piccolo database con autenticazione.
+La versione v0.4.0 salva il diario in `diario_alimentare.json` e include anche esportazione/importazione JSON dalla barra laterale.
 
-## Modalità di emergenza
-
-Se il portale CompassCloud cambia struttura o blocca la lettura automatica, apri il menu laterale e seleziona:
-
-`Inserisco/copio il menù`
-
-Poi incolla i piatti del giorno. L'app continuerà a suggerire pranzo e cena.
+Su Streamlit Cloud il file locale può non essere permanente se l'app viene riavviata o ridistribuita. Consiglio pratico: ogni 2-3 giorni usa "Scarica diario JSON" dalla barra laterale.

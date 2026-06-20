@@ -1,67 +1,76 @@
 # Ferrero Mensa Coach - Alba
 
-Web app per scegliere il pranzo alla mensa Ferrero Alba e ricevere una proposta di cena coerente con il piano alimentare personale da 1800 kcal.
+Web app Streamlit per aiutare Simone a scegliere cosa mangiare alla mensa Ferrero di Alba e a bilanciare la cena secondo il piano alimentare personale.
 
-## Uso previsto
+La logica è costruita su uno schema da 1800 kcal con pasti composti da una fonte di carboidrato, una fonte proteica, verdura abbondante e condimento controllato. L'app non sostituisce medico o nutrizionista.
 
-La versione ideale è online: pubblichi l'app su Streamlit Cloud, apri il link dal telefono e lo aggiungi alla schermata Home dell'iPhone.
+## Funzioni principali
 
-Per le istruzioni complete di pubblicazione da telefono leggi:
+- Lettura del menù Ferrero CompassCloud quando disponibile.
+- Modalità manuale se il sito non risponde: puoi incollare il menù.
+- Scelta della data.
+- Domanda sulla colazione.
+- Suggerimento del pranzo migliore in mensa.
+- Inserimento del pranzo realmente mangiato.
+- Suggerimento della cena in base al pranzo reale.
+- Alternative per la cena.
+- Sabato e domenica: niente mensa, proposta di pranzo e cena da casa/ristorante.
+- Diario alimentare locale.
+- Bilanciamento settimanale automatico.
+- Backup e import del diario in JSON.
 
-`DEPLOY_MOBILE.md`
+## Novità v0.4.0
 
-## Cosa fa
+L'app ora tiene conto degli ultimi 7 giorni e modifica i consigli in base alla rotazione delle fonti proteiche:
 
-- Legge il menu pubblico da `https://ferrero.compasscloud.it/presentazione_menu`.
-- Considera le linee Alba selezionate: Traditional, Healthy, Urban Grill, Local&World, Chroma Corner.
-- Aggiunge le alternative fisse dichiarate: pollo/tacchino ai ferri, sottofiletto ai ferri, banco insalata, pasta/riso al sugo rosso e pokè.
-- Valuta i piatti con un sistema di punteggio da 0 a 100.
-- Propone il pranzo migliore e alcune alternative.
-- Suggerisce la cena in base al pranzo scelto.
-- Salva un diario semplice in `diario_alimentare.json` quando usata localmente.
-- Ha una modalità manuale se il sito non è raggiungibile o cambia struttura.
+- Se il pesce è basso, dà bonus a pesce semplice e tonno.
+- Se i legumi sono bassi, dà bonus a ceci, lenticchie, fagioli e piatti con legumi.
+- Se la carne rossa è già alta, penalizza sottofiletto, vitello, lonza, ragù e carne cruda.
+- Se i formaggi sono già frequenti, penalizza feta, primo sale, mozzarella, ricotta, scamorza e gorgonzola.
+- Se le uova sono già frequenti, penalizza frittata e uova.
+- Se la settimana è già ricca, penalizza fritti, gratin, salse, lasagne e piatti molto conditi.
 
-## Avvio locale Windows
+Il conteggio distingue pranzo e cena, quindi se mangi formaggio due volte nello stesso giorno viene contato due volte.
 
-1. Installa Python 3.10 o superiore.
-2. Estrai questa cartella.
-3. Apri Prompt dei comandi o PowerShell nella cartella.
-4. Esegui:
+## Uso locale
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Avvio locale macOS/Linux
+## Deploy su Streamlit Cloud
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-streamlit run app.py
+Nel repository GitHub assicurati che siano presenti almeno:
+
+```text
+app.py
+requirements.txt
+README.md
 ```
 
-## Pubblicazione online
+In Streamlit Cloud imposta:
 
-Metodo consigliato:
+```text
+Repository: girosim-sudo/DIET
+Branch: main
+Main file path: app.py
+```
 
-1. Carica i file su un repository GitHub privato.
-2. Pubblica su Streamlit Community Cloud.
-3. Apri il link da Safari su iPhone.
-4. Aggiungi alla schermata Home.
+Poi premi Deploy.
 
-## Personalizzazione
+## Aggiornamento da versione precedente
 
-Nel file `app.py` puoi modificare:
+Carica su GitHub almeno questi file aggiornati:
 
-- `DEFAULT_PROFILE`: calorie, acqua, olio, allergie, alimenti non graditi.
-- `FIXED_OPTIONS`: alternative sempre disponibili in mensa.
-- `GOOD_KEYWORDS` e `BAD_KEYWORDS`: regole di punteggio.
-- `suggest_dinner()`: logica della cena.
+```text
+app.py
+README.md
+CHANGELOG.md
+```
 
-## Nota importante
+Poi su Streamlit fai Reboot o Redeploy se non si aggiorna da solo.
 
-L'app è un assistente pratico, non un dispositivo medico. Le indicazioni devono restare coerenti con il piano concordato con la nutrizionista e con eventuali indicazioni del medico.
+## Nota sul diario
+
+Il diario viene salvato in `diario_alimentare.json`. Su Streamlit Cloud il file locale può non essere permanente in caso di riavvio dell'app. Per questo nella barra laterale è stata aggiunta la sezione "Backup diario": ogni tanto scarica il JSON e reimportalo se serve.
